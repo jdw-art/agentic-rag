@@ -1,12 +1,13 @@
 from typing import Literal, TypedDict, List, Optional
 import os
+import json
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 
-from rag_utils import retrieve_documents, step_back_expand, generate_hypothetical_document
-from tools import emit_rag_step
+from backend.rag_utils import retrieve_documents, step_back_expand, generate_hypothetical_document
+from backend.tools import emit_rag_step
 
 load_dotenv()
 
@@ -56,7 +57,8 @@ GRADE_PROMPT = (
     "Here is the retrieved document: \n\n {context} \n\n"
     "Here is the user question: {question} \n"
     "If the document contains keyword(s) or semantic meaning related to the user question, grade it as relevant. \n"
-    "Give a binary score 'yes' or 'no' score to indicate whether the document is relevant to the question."
+    "Give a binary score 'yes' or 'no' score to indicate whether the document is relevant to the question. \n"
+    'The JSON format must be: {{"binary_score": "yes"}} or {{"binary_score": "no"}}.\n'
 )
 
 
@@ -169,11 +171,12 @@ def grade_documents_node(state: RAGState) -> RAGState:
         return {"route": "rewrite_question", "rag_trace": rag_trace}
     question = state["question"]
     context = state.get("context", "")
-    prompt = GRADE_PROMPT.format(question=question, context=context)
-    response = grader.with_structured_output(GradeDocuments).invoke(
-        [{"role": "user", "content": prompt}]
-    )
-    score = (response.binary_score or "").strip().lower()
+    prompt = GRADE_PROMPT.format(question=question, context=context)   
+    try:
+        response = grader.invoke([{"role": "user", "content": prompt}]).content
+    except Exception as e:
+        response = GradeDocuments(binary_score="unknown")
+    score = (json.loads(response).get("binary_score") or "").strip().lower()
     route = "generate_answer" if score == "yes" else "rewrite_question"
     if route == "generate_answer":
         emit_rag_step("✅", "文档相关性评估通过", f"评分: {score}")
