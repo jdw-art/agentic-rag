@@ -1,3 +1,4 @@
+"""认证鉴权模块"""
 import os
 import base64
 import hashlib

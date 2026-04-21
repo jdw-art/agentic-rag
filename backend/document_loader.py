@@ -10,6 +10,7 @@ class DocumentLoader:
 
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
         # 保留原有参数以兼容外部调用；默认启用三层滑动窗口分块。
+        # 根据基础chunk_size和chunk_overlap计算各层分块的size和overlap
         level_1_size = max(1200, chunk_size * 2)
         level_1_overlap = max(240, chunk_overlap * 2)
         level_2_size = max(600, chunk_size)
@@ -149,6 +150,7 @@ class DocumentLoader:
                     "file_type": doc_type,
                     "page_number": doc.metadata.get("page", 0),
                 }
+                # 三级分块
                 page_chunks = self._split_page_to_three_levels(
                     text=(doc.page_content or "").strip(),
                     base_doc=base_doc,

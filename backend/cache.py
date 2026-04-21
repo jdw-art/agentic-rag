@@ -1,3 +1,4 @@
+"""缓存模块"""
 import json
 import os
 from typing import Any, Optional

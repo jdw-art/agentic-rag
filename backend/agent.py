@@ -30,6 +30,7 @@ class ConversationStorage:
 
     @staticmethod
     def _to_langchain_messages(records: list[dict]) -> list:
+        # 将数据库记录转换为Langchain消息对象
         messages = []
         for msg_data in records:
             msg_type = msg_data.get("type")
@@ -100,11 +101,14 @@ class ConversationStorage:
 
     def load(self, user_id: str, session_id: str) -> list:
         """加载对话"""
+        # 1. 检查缓存是否存在
         cached = cache.get_json(self._messages_cache_key(user_id, session_id))
         if cached is not None:
             return self._to_langchain_messages(cached)
 
+        # 2. 从数据库中获取会话消息
         records = self.get_session_messages(user_id, session_id)
+        # 3. 缓存会话消息
         cache.set_json(self._messages_cache_key(user_id, session_id), records)
         return self._to_langchain_messages(records)
 
@@ -151,9 +155,11 @@ class ConversationStorage:
 
         db = SessionLocal()
         try:
+            # 1. 检查用户是否存在
             user = db.query(User).filter(User.username == user_id).first()
             if not user:
                 return []
+            # 2. 检查会话是否存在
             session = (
                 db.query(ChatSession)
                 .filter(ChatSession.user_id == user.id, ChatSession.session_id == session_id)
@@ -162,6 +168,7 @@ class ConversationStorage:
             if not session:
                 return []
 
+            # 3. 从数据库中获取会话消息
             rows = (
                 db.query(ChatMessage)
                 .filter(ChatMessage.session_ref_id == session.id)
@@ -217,6 +224,7 @@ def create_agent_instance():
         stream_usage=True,
     )
 
+    # 把 search_knowledge_base 注册成工具，让LLM自己决定是否使用rag检索
     agent = create_agent(
         model=model,
         tools=[get_current_weather, search_knowledge_base],
@@ -260,6 +268,7 @@ def summarize_old_messages(model, messages: list) -> str:
 
 def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
     """使用 Agent 处理用户消息并返回响应"""
+    # 1. 从存储中加载会话消息（返回langchain消息对象列表）
     messages = storage.load(user_id, session_id)
 
     # 清理可能残留的 RAG 上下文，避免跨请求污染
@@ -267,18 +276,21 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     reset_tool_call_guards()
     
     if len(messages) > 50:
+        # 2. 对话过长，使用LLM总结对话摘要
         summary = summarize_old_messages(model, messages[:40])
 
+        # 3. 替换旧对话摘要为新摘要
         messages = [
             SystemMessage(content=f"之前的对话摘要：\n{summary}")
         ] + messages[40:]
-
+    # 4. 添加当前用户消息
     messages.append(HumanMessage(content=user_text))
     result = agent.invoke(
         {"messages": messages},
         config={"recursion_limit": 8},
     )
 
+    # 5. 提取响应内容
     response_content = ""
     if isinstance(result, dict):
         if "output" in result:
@@ -295,6 +307,7 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     
     messages.append(AIMessage(content=response_content))
 
+    # 6. 获取最近一次 RAG 检索上下文（取回本轮rag trace），默认读取后清空。
     rag_context = get_last_rag_context(clear=True)
     rag_trace = rag_context.get("rag_trace") if rag_context else None
 
@@ -313,12 +326,18 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
     架构：使用统一输出队列 + 后台任务，确保 RAG 检索步骤在工具执行期间实时推送，
     而非等待工具完成后才显示。
     """
+    # 1. 从存储中加载会话消息（返回langchain消息对象列表）
     messages = storage.load(user_id, session_id)
 
+    # 2. 清理就状态
     # 清理可能残留的 RAG 上下文
     get_last_rag_context(clear=True)
+    # 重置工具调用守卫，确保每次请求都从新开始
     reset_tool_call_guards()
 
+    # 3. 建立统一输出队列，队列承接两种事件
+    # a. 模型生成的内容chunk
+    # b. RAG 检索过程事件
     # 统一输出队列：所有事件（content / rag_step）都汇入这里
     output_queue = asyncio.Queue()
 
@@ -327,18 +346,28 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
         def put_nowait(self, step):
             output_queue.put_nowait({"type": "rag_step", "step": step})
 
+    # 4. 把RAG检索过程事件代理到统一输出队列
+    # RAG 流程内部只管调用 emit_rag_step(...)
+    # 这些 step 事件最终会被送进 output_queue
+    # 主循环再把它们实时 yield 给前端
     set_rag_step_queue(_RagStepProxy())
 
+    # 5. 长对话使用LLM进行摘要压缩，并替换旧对话摘要
     if len(messages) > 50:
         summary = summarize_old_messages(model, messages[:40])
         messages = [
             SystemMessage(content=f"之前的对话摘要：\n{summary}")
         ] + messages[40:]
 
+    # 6. 添加当前用户消息
     messages.append(HumanMessage(content=user_text))
 
     full_response = ""
 
+    # 7. 后台任务：运行 agent 并将内容 chunk 推入输出队列。
+    # 真正运行 agent.astream(...)
+    # 从模型流式输出中拿到 chunk
+    # 把 chunk 包装成事件塞进 output_queue
     async def _agent_worker():
         """后台任务：运行 agent 并将内容 chunk 推入输出队列。"""
         nonlocal full_response
@@ -365,6 +394,7 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
 
                 if content:
                     full_response += content
+                    # 每个 chunk 都会触发一个事件，包含当前 chunk 内容
                     await output_queue.put({"type": "content", "content": content})
         except Exception as e:
             await output_queue.put({"type": "error", "content": str(e)})

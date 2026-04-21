@@ -91,6 +91,7 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
 
 @router.get("/auth/me", response_model=CurrentUserResponse)
 async def me(current_user: User = Depends(get_current_user)):
+    """获取当前用户角色"""
     return CurrentUserResponse(username=current_user.username, role=current_user.role)
 
 
@@ -139,6 +140,7 @@ async def delete_session(session_id: str, current_user: User = Depends(get_curre
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest, current_user: User = Depends(get_current_user)):
+    """非流式对话"""
     try:
         session_id = request.session_id or "default_session"
         resp = chat_with_agent(request.message, current_user.username, session_id)
@@ -189,6 +191,7 @@ async def chat_stream_endpoint(request: ChatRequest, current_user: User = Depend
 
 
 def _is_supported_document(filename: str) -> bool:
+    """检查文件是否为支持的文档格式"""
     file_lower = filename.lower()
     return (
         file_lower.endswith(".pdf")
@@ -213,6 +216,7 @@ def _process_upload_job(job_id: str, file_path: str, filename: str) -> None:
     try:
         upload_job_manager.complete_step(job_id, "upload", "文件已保存到服务器")
 
+        # 1. 文档解析前，先清理旧版本分块和索引
         failed_step = "cleanup"
         upload_job_manager.update_step(job_id, "cleanup", 10, "running", "正在清理同名旧文档")
         milvus_manager.init_collection()
@@ -231,12 +235,15 @@ def _process_upload_job(job_id: str, file_path: str, filename: str) -> None:
             pass
         upload_job_manager.complete_step(job_id, "cleanup", "旧版本清理完成")
 
+        # 2. 解析文档并执行三级分块
         failed_step = "parse"
         upload_job_manager.update_step(job_id, "parse", 5, "running", "正在解析文档并执行三级分块")
+        # 2.1 加载文档内容并执行三级分块
         new_docs = loader.load_document(file_path, filename)
         if not new_docs:
             raise ValueError("文档处理失败，未能提取内容")
 
+        # 2.2 分块结果筛选
         parent_docs = [doc for doc in new_docs if int(doc.get("chunk_level", 0) or 0) in (1, 2)]
         leaf_docs = [doc for doc in new_docs if int(doc.get("chunk_level", 0) or 0) == 3]
         if not leaf_docs:
@@ -247,11 +254,14 @@ def _process_upload_job(job_id: str, file_path: str, filename: str) -> None:
             f"解析完成：父级分块 {len(parent_docs)} 个，叶子分块 {len(leaf_docs)} 个",
         )
 
+        # 3. 父级分块入库
         failed_step = "parent_store"
         upload_job_manager.update_step(job_id, "parent_store", 20, "running", "正在写入父级分块")
+        # 3.1 父级分块入库
         parent_chunk_store.upsert_documents(parent_docs)
         upload_job_manager.complete_step(job_id, "parent_store", f"父级分块已入库：{len(parent_docs)} 个")
 
+        # 4. 叶子分块向量化入库
         failed_step = "vector_store"
         total_leaf = len(leaf_docs)
         upload_job_manager.update_step(
