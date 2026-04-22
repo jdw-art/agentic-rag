@@ -37,11 +37,17 @@ class EmbeddingService:
         self.k1 = 1.5
         self.b = 0.75
 
+        # 词表与 df 统计
         self._vocab: dict[str, int] = {}
+        # 词表计数器
         self._vocab_counter = 0
+        # 文档频率统计
         self._doc_freq: Counter[str] = Counter()
+        # 总文档数
         self._total_docs = 0
+        # 总文档长度和
         self._sum_token_len = 0
+        # 平均文档长度
         self._avg_doc_len = 1.0
 
         self._load_state()
@@ -52,6 +58,7 @@ class EmbeddingService:
         )
 
     def _load_state(self) -> None:
+        """从本地文件中加载bm25状态"""
         path = self._state_path
         if not path.is_file():
             return
@@ -139,6 +146,7 @@ class EmbeddingService:
             raise Exception(f"本地嵌入模型调用失败: {str(e)}") from e
 
     def tokenize(self, text: str) -> list[str]:
+        """简易分词器，中文按“单字切分”，英文按“连续字母串切分”"""
         text = text.lower()
         tokens = []
         chinese_pattern = re.compile(r"[\u4e00-\u9fff]")
@@ -159,25 +167,32 @@ class EmbeddingService:
         return tokens
 
     def _sparse_vector_for_text_unlocked(self, text: str) -> tuple[dict, bool]:
+        """计算文本的稀疏向量表示"""
+        # 1. 对文本进行分词
         tokens = self.tokenize(text)
         doc_len = len(tokens)
-        tf = Counter(tokens)
+        tf = Counter(tokens)     # 词频统计
         sparse_vector: dict[int, float] = {}
         vocab_changed = False
-        n = max(self._total_docs, 0)
-        avg = max(self._avg_doc_len, 1.0)
+        n = max(self._total_docs, 0)    # 当前语料库总文档数
+        avg = max(self._avg_doc_len, 1.0)    # 当前语料库平均文档长度
 
         for token, freq in tf.items():
+            # 2. 计算每个词的BM25分数
             if token not in self._vocab:
                 self._vocab[token] = self._vocab_counter
                 self._vocab_counter += 1
                 vocab_changed = True
 
-            idx = self._vocab[token]
-            df = self._doc_freq.get(token, 0)
+            idx = self._vocab[token]     # 当前词对应的稀疏向量维度编号
+            df = self._doc_freq.get(token, 0)     # 取这个词在整个语料库中的文档频率 df
+            # 计算逆文档频率idf
             if df == 0:
                 idf = math.log((n + 1) / 1)
             else:
+                # IDF变体
+                # df 越大，词越常见，idf 越低
+                # df 越小，词越稀有，idf 越高
                 idf = math.log((n - df + 0.5) / (df + 0.5) + 1)
 
             numerator = freq * (self.k1 + 1)
@@ -189,6 +204,7 @@ class EmbeddingService:
         return sparse_vector, vocab_changed
 
     def get_sparse_embedding(self, text: str) -> dict:
+        """获取文本的稀疏向量表示"""
         with self._lock:
             sparse_vector, vocab_changed = self._sparse_vector_for_text_unlocked(text)
             if vocab_changed:
@@ -196,6 +212,7 @@ class EmbeddingService:
         return sparse_vector
 
     def get_sparse_embeddings(self, texts: list[str]) -> list[dict]:
+        """获取文档列表的稀疏向量表示"""
         if not texts:
             return []
         with self._lock:
