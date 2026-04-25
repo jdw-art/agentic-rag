@@ -72,6 +72,7 @@ class GradeDocuments(BaseModel):
 
 class RewriteStrategy(BaseModel):
     """Choose a query expansion strategy."""
+    """退步提示、HyDE提示、复杂提示"""
 
     strategy: Literal["step_back", "hyde", "complex"]
 
@@ -104,10 +105,13 @@ def _format_docs(docs: List[dict]) -> str:
 
 def retrieve_initial(state: RAGState) -> RAGState:
     query = state["question"]
+    # 1. 发送初始检索请求到队列中
     emit_rag_step("🔍", "正在检索知识库...", f"查询: {query[:50]}")
+    # 2. 执行混合检索，top_k=5
     retrieved = retrieve_documents(query, top_k=5)
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
+    # 3. 格式化检索结果
     context = _format_docs(results)
     emit_rag_step(
         "🧱",
@@ -158,6 +162,7 @@ def retrieve_initial(state: RAGState) -> RAGState:
 
 
 def grade_documents_node(state: RAGState) -> RAGState:
+    """评估文档相关性"""
     grader = _get_grader_model()
     emit_rag_step("📊", "正在评估文档相关性...")
     if not grader:
@@ -171,12 +176,14 @@ def grade_documents_node(state: RAGState) -> RAGState:
         return {"route": "rewrite_question", "rag_trace": rag_trace}
     question = state["question"]
     context = state.get("context", "")
+    # 构建评估prompt，返回二元评分，'yes'或'no'
     prompt = GRADE_PROMPT.format(question=question, context=context)   
     try:
         response = grader.invoke([{"role": "user", "content": prompt}]).content
     except Exception as e:
         response = GradeDocuments(binary_score="unknown")
     score = (json.loads(response).get("binary_score") or "").strip().lower()
+    # 解析评分，判断时候需要执行查询重写或生成答案
     route = "generate_answer" if score == "yes" else "rewrite_question"
     if route == "generate_answer":
         emit_rag_step("✅", "文档相关性评估通过", f"评分: {score}")
@@ -195,6 +202,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
 def rewrite_question_node(state: RAGState) -> RAGState:
     question = state["question"]
     emit_rag_step("✏️", "正在重写查询...")
+    # 1. 调用路由模型，选择查询扩展策略：退步提示、HyDE提示、复杂提示
     router = _get_router_model()
     strategy = "step_back"
     if router:
@@ -247,6 +255,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
 
 def retrieve_expanded(state: RAGState) -> RAGState:
     strategy = state.get("expansion_type") or "step_back"
+    # 1. 调用路由模型，选择查询扩展策略：退步提示、HyDE提示、复杂提示
     emit_rag_step("🔄", "使用扩展查询重新检索...", f"策略: {strategy}")
     results: List[dict] = []
     rerank_applied_any = False
@@ -263,6 +272,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
     auto_merge_replaced_chunks = 0
     auto_merge_steps = 0
 
+    # 2. 调用检索模型，执行检索
     if strategy in ("hyde", "complex"):
         hypothetical_doc = state.get("hypothetical_doc") or generate_hypothetical_document(state["question"])
         retrieved_hyde = retrieve_documents(hypothetical_doc, top_k=5)
@@ -321,6 +331,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         auto_merge_replaced_chunks += int(step_meta.get("auto_merge_replaced_chunks") or 0)
         auto_merge_steps += int(step_meta.get("auto_merge_steps") or 0)
 
+    # 3. 去重
     deduped = []
     seen = set()
     for item in results:
@@ -365,6 +376,8 @@ def retrieve_expanded(state: RAGState) -> RAGState:
 
 
 def build_rag_graph():
+    """构建RAG图"""
+    # 1. 初始检索
     graph = StateGraph(RAGState)
     graph.add_node("retrieve_initial", retrieve_initial)
     graph.add_node("grade_documents", grade_documents_node)

@@ -226,6 +226,7 @@ class MilvusManager:
         ]
         
         # 密集向量搜索请求
+        # 向量相似度计算采用IP，内积相似度，ef=64，M=16
         dense_search = AnnSearchRequest(
             data=[dense_embedding],
             anns_field="dense_embedding",

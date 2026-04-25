@@ -37,19 +37,24 @@ def _get_rerank_endpoint() -> str:
 
 
 def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[dict], int]:
+    """合并文档到父节点，根据阈值判断是否合并"""
+    # 1. 按照parent_chunk_id 分组
     groups: Dict[str, List[dict]] = defaultdict(list)
     for doc in docs:
         parent_id = (doc.get("parent_chunk_id") or "").strip()
         if parent_id:
             groups[parent_id].append(doc)
 
+    # 2. 筛选出符合阈值的父节点
     merge_parent_ids = [parent_id for parent_id, children in groups.items() if len(children) >= threshold]
     if not merge_parent_ids:
         return docs, 0
 
+    # 3. 从父节点存储中获取父节点文档
     parent_docs = _parent_chunk_store.get_documents_by_ids(merge_parent_ids)
     parent_map = {item.get("chunk_id", ""): item for item in parent_docs if item.get("chunk_id")}
 
+    # 4. 合并文档到父节点，更新父节点的score
     merged_docs: List[dict] = []
     merged_count = 0
     for doc in docs:
@@ -66,6 +71,7 @@ def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[d
         merged_docs.append(parent_doc)
         merged_count += 1
 
+    # 5. 去重
     deduped: List[dict] = []
     seen = set()
     for item in merged_docs:
@@ -79,6 +85,8 @@ def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[d
 
 
 def _auto_merge_documents(docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
+    """自动合并文档到父节点，根据阈值判断是否合并"""
+    # 1. 检查是否启用自动合并
     if not AUTO_MERGE_ENABLED or not docs:
         return docs[:top_k], {
             "auto_merge_enabled": AUTO_MERGE_ENABLED,
@@ -106,6 +114,8 @@ def _auto_merge_documents(docs: List[dict], top_k: int) -> Tuple[List[dict], Dic
 
 
 def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
+    """对文档进行重新排序，根据查询和文档内容的相似度"""
+    # 1. 为文档添加原始排名
     docs_with_rank = [{**doc, "rrf_rank": i} for i, doc in enumerate(docs, 1)]
     meta: Dict[str, Any] = {
         "rerank_enabled": bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST),
@@ -118,6 +128,7 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
     if not docs_with_rank or not meta["rerank_enabled"]:
         return docs_with_rank[:top_k], meta
 
+    # 2. 发送请求到Rerank API
     payload = {
         "model": RERANK_MODEL,
         "query": query,
@@ -142,6 +153,7 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
             meta["rerank_error"] = f"HTTP {response.status_code}: {response.text}"
             return docs_with_rank[:top_k], meta
 
+        # 3. 解析响应
         items = response.json().get("results", [])
         reranked = []
         for item in items:
@@ -159,11 +171,13 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
         meta["rerank_error"] = "empty_rerank_results"
         return docs_with_rank[:top_k], meta
     except (requests.RequestException, json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+        # 4. 降级到原始排名
         meta["rerank_error"] = str(e)
         return docs_with_rank[:top_k], meta
 
 
 def _get_stepback_model():
+    """获取退步模型"""
     global _stepback_model
     if not ARK_API_KEY or not MODEL:
         return None
@@ -179,6 +193,7 @@ def _get_stepback_model():
 
 
 def _generate_step_back_question(query: str) -> str:
+    """生成退步问题，对查询进行重写"""
     model = _get_stepback_model()
     if not model:
         return ""
@@ -194,6 +209,7 @@ def _generate_step_back_question(query: str) -> str:
 
 
 def _answer_step_back_question(step_back_question: str) -> str:
+    """Step-Back Prompting: 回答退步问题，提供通用原理/背景知识"""
     model = _get_stepback_model()
     if not model or not step_back_question:
         return ""
@@ -209,6 +225,7 @@ def _answer_step_back_question(step_back_question: str) -> str:
 
 
 def generate_hypothetical_document(query: str) -> str:
+    """HyDE: 生成假设性文档，用于帮助检索相关信息"""
     model = _get_stepback_model()
     if not model:
         return ""
@@ -225,6 +242,7 @@ def generate_hypothetical_document(query: str) -> str:
 
 
 def step_back_expand(query: str) -> dict:
+    """Step-Back Prompting: 退步扩展查询，生成更概括的问题，用于帮助检索相关信息。"""
     step_back_question = _generate_step_back_question(query)
     step_back_answer = _answer_step_back_question(step_back_question)
     if step_back_question or step_back_answer:
@@ -243,19 +261,25 @@ def step_back_expand(query: str) -> dict:
 
 
 def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
+    """从Milvus中检索文档"""
     candidate_k = max(top_k * 3, top_k)
+    # 只检索叶子节点文档，避免检索到中间节点文档
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
     try:
+        # 1. 生成 dense + sparse 向量表示
         dense_embeddings = _embedding_service.get_embeddings([query])
         dense_embedding = dense_embeddings[0]
         sparse_embedding = _embedding_service.get_sparse_embedding(query)
 
+        # 2. 执行混合检索
         retrieved = _milvus_manager.hybrid_retrieve(
             dense_embedding=dense_embedding,
             sparse_embedding=sparse_embedding,
             top_k=candidate_k,
             filter_expr=filter_expr,
         )
+
+        # 3. 对检索结果进行重排
         reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
         merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=top_k)
         rerank_meta["retrieval_mode"] = "hybrid"
@@ -265,6 +289,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
         return {"docs": merged_docs, "meta": rerank_meta}
     except Exception:
         try:
+            # 4. backoff 回退到 dense 检索
             dense_embeddings = _embedding_service.get_embeddings([query])
             dense_embedding = dense_embeddings[0]
             retrieved = _milvus_manager.dense_retrieve(
@@ -272,6 +297,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
                 top_k=candidate_k,
                 filter_expr=filter_expr,
             )
+            # 5. 对检索结果进行重排
             reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
             merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=top_k)
             rerank_meta["retrieval_mode"] = "dense_fallback"
@@ -280,6 +306,7 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
             rerank_meta.update(merge_meta)
             return {"docs": merged_docs, "meta": rerank_meta}
         except Exception:
+            # 6. 兜底处理，失败返回空文档
             return {
                 "docs": [],
                 "meta": {

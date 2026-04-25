@@ -22,10 +22,12 @@ class MilvusWriter:
         self.milvus_manager.init_collection()
 
         all_texts = [doc["text"] for doc in documents]
+        # 先增量添加所有文档，更新BM25统计状态
         self.embedding_service.increment_add_documents(all_texts)
 
         total = len(documents)
         for i in range(0, total, batch_size):
+            # 按照批次处理文档
             batch = documents[i:i + batch_size]
             texts = [doc["text"] for doc in batch]
             
