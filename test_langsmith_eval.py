@@ -42,7 +42,7 @@ def _extract_reference(reference_outputs: Optional[dict]) -> str:
     return ""
 
 # 1. Select your dataset
-dataset_name = "RAG"
+dataset_name = "rag_test"
 
 # 2. Define an evaluator (评估最终答案，不评估检索块)
 def custom_evaluator(run_outputs: dict, reference_outputs: dict) -> bool:
