@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>喵喵智能助手</title>
+    <title>SuperMew</title>
     <link rel="stylesheet" href="style.css">
     <!-- Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&family=Zcool+KuaiLe&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
     <!-- Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Markdown Parser -->
@@ -23,30 +23,72 @@
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-header">
-                <div class="logo-icon">🐱</div>
-                <h2>喵喵助手</h2>
+                <div class="logo-icon" aria-hidden="true">
+                    <span class="logo-orbit logo-orbit-one"></span>
+                    <span class="logo-orbit logo-orbit-two"></span>
+                    <span class="logo-core"></span>
+                </div>
+                <div class="brand-copy">
+                    <span class="brand-overline">Assistant</span>
+                    <h2>SuperMew</h2>
+                </div>
             </div>
             <nav class="sidebar-nav">
-                <button @click="handleNewChat" :class="['nav-btn', {active: activeNav === 'newChat'}]">
-                    <i class="fas fa-plus"></i> 新建会话
+                <button @click="handleNewChat" :class="['nav-btn', {active: activeNav === 'newChat'}]" aria-label="新建会话">
+                    <i class="fas fa-pen-to-square" aria-hidden="true"></i>
+                    <span class="nav-copy">
+                        <strong>新建会话</strong>
+                        <small>Start a fresh conversation</small>
+                    </span>
                 </button>
-                <button @click="handleHistory" :class="['nav-btn', {active: activeNav === 'history'}]">
-                    <i class="fas fa-history"></i> 历史记录
+                <button @click="handleHistory" :class="['nav-btn', {active: activeNav === 'history'}]" aria-label="历史记录">
+                    <i class="fas fa-clock-rotate-left" aria-hidden="true"></i>
+                    <span class="nav-copy">
+                        <strong>历史记录</strong>
+                        <small>Browse saved conversations</small>
+                    </span>
                 </button>
-                <button v-if="isAdmin" @click="handleSettings" :class="['nav-btn', {active: activeNav === 'settings'}]">
-                    <i class="fas fa-cog"></i> 设置
+                <button v-if="isAdmin" @click="handleSettings" :class="['nav-btn', {active: activeNav === 'settings'}]" aria-label="文档管理">
+                    <i class="fas fa-sliders" aria-hidden="true"></i>
+                    <span class="nav-copy">
+                        <strong>文档管理</strong>
+                        <small>Manage knowledge sources</small>
+                    </span>
                 </button>
             </nav>
-            <div class="sidebar-footer">
-                <button @click="handleClearChat" class="danger-btn">
-                    <i class="fas fa-trash-alt"></i> 清空当前对话
-                </button>
-                <div v-if="isAuthenticated" class="user-badge">
-                    <span>{{ currentUser.username }}</span>
-                    <small>{{ currentUser.role }}</small>
+            <div v-if="isAuthenticated" class="sidebar-footer" ref="accountMenuRoot">
+                <div v-if="showAccountMenu" class="account-menu" role="menu" aria-label="账户菜单">
+                    <div class="account-menu-group">
+                        <button type="button" class="account-menu-item" @click="handleClearChatFromMenu" role="menuitem">
+                            <span class="account-menu-icon"><i class="fas fa-trash-can-arrow-up" aria-hidden="true"></i></span>
+                            <span class="account-menu-label">清空当前会话</span>
+                        </button>
+                        <button type="button" class="account-menu-item danger" @click="handleLogoutFromMenu" role="menuitem">
+                            <span class="account-menu-icon"><i class="fas fa-right-from-bracket" aria-hidden="true"></i></span>
+                            <span class="account-menu-label">退出登录</span>
+                        </button>
+                    </div>
                 </div>
-                <button v-if="isAuthenticated" @click="handleLogout" class="danger-btn logout-btn">
-                    <i class="fas fa-right-from-bracket"></i> 退出登录
+
+                <button
+                    type="button"
+                    class="account-trigger"
+                    @click.stop="toggleAccountMenu"
+                    :aria-expanded="showAccountMenu ? 'true' : 'false'"
+                    aria-haspopup="menu"
+                    aria-label="打开账户菜单"
+                >
+                    <span class="account-avatar">{{ currentUser.username.slice(0, 1).toUpperCase() }}</span>
+                    <span class="account-copy">
+                        <strong>{{ currentUser.username }}</strong>
+                        <small>{{ isAdmin ? 'Admin plan' : 'Free plan' }}</small>
+                    </span>
+                    <span class="account-trigger-actions">
+                        <span class="account-trigger-btn">
+                            <i class="fas fa-chevron-up" aria-hidden="true" v-if="showAccountMenu"></i>
+                            <i class="fas fa-chevron-down" aria-hidden="true" v-else></i>
+                        </span>
+                    </span>
                 </button>
             </div>
         </aside>
@@ -54,17 +96,22 @@
         <!-- Main Chat Area -->
         <main class="main-content">
             <div v-if="!isAuthenticated" class="auth-panel">
-                <h2>{{ authMode === 'login' ? '登录 SuperMew' : '注册 SuperMew' }}</h2>
-                <p>登录后即可使用聊天和历史记录；管理员可管理文档知识库。</p>
+                <div class="panel-eyebrow">SuperMew</div>
+                <h2>{{ authMode === 'login' ? '登录后继续你的工作流' : '创建一个新的 SuperMew 账户' }}</h2>
+                <p>登录后即可继续聊天、查看历史记录；管理员还可维护文档知识库。</p>
                 <div class="auth-form">
-                    <input v-model="authForm.username" type="text" placeholder="用户名" />
-                    <input v-model="authForm.password" type="password" placeholder="密码" />
-                    <select v-if="authMode === 'register'" v-model="authForm.role">
+                    <label class="field-label" for="auth-username">用户名</label>
+                    <input id="auth-username" v-model="authForm.username" type="text" placeholder="输入用户名" />
+                    <label class="field-label" for="auth-password">密码</label>
+                    <input id="auth-password" v-model="authForm.password" type="password" placeholder="输入密码" />
+                    <label v-if="authMode === 'register'" class="field-label" for="auth-role">身份</label>
+                    <select id="auth-role" v-if="authMode === 'register'" v-model="authForm.role">
                         <option value="user">普通用户</option>
                         <option value="admin">管理员</option>
                     </select>
-                    <input v-if="authMode === 'register' && authForm.role === 'admin'" v-model="authForm.admin_code" type="password" placeholder="管理员邀请码" />
-                    <button class="send-btn auth-submit" :disabled="authLoading" @click="handleAuthSubmit">
+                    <label v-if="authMode === 'register' && authForm.role === 'admin'" class="field-label" for="auth-admin-code">管理员邀请码</label>
+                    <input id="auth-admin-code" v-if="authMode === 'register' && authForm.role === 'admin'" v-model="authForm.admin_code" type="password" placeholder="输入管理员邀请码" />
+                    <button class="auth-submit" :disabled="authLoading" @click="handleAuthSubmit">
                         {{ authLoading ? '提交中...' : (authMode === 'login' ? '登录' : '注册') }}
                     </button>
                     <button class="auth-switch" @click="authMode = authMode === 'login' ? 'register' : 'login'">
@@ -76,12 +123,37 @@
             <!-- Settings Panel -->
             <div v-if="isAuthenticated && activeNav === 'settings'" class="settings-panel">
                 <div class="settings-header">
+                    <div class="panel-eyebrow">Knowledge Base Admin</div>
                     <h2><i class="fas fa-cog"></i> 文档管理</h2>
-                    <p>上传文档进行向量化处理，支持 PDF 和 Word 、Excel 格式</p>
+                    <p>上传文档并完成向量化处理，统一管理知识库中的 PDF、Word 与 Excel 文件。</p>
+                    <div class="settings-overview">
+                        <div class="settings-stat">
+                            <span class="settings-stat-label">文档总数</span>
+                            <strong>{{ documents.length }}</strong>
+                        </div>
+                        <div class="settings-stat">
+                            <span class="settings-stat-label">支持格式</span>
+                            <strong>PDF / DOC / XLS</strong>
+                        </div>
+                        <div class="settings-stat">
+                            <span class="settings-stat-label">当前身份</span>
+                            <strong>{{ currentUser ? currentUser.username : '管理员' }}</strong>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="upload-section">
-                    <h3><i class="fas fa-upload"></i> 上传文档</h3>
+                    <div class="section-heading">
+                        <div>
+                            <h3><i class="fas fa-upload"></i> 上传文档</h3>
+                            <p>选择文件后即可发起上传，系统会自动执行解析、切片与索引流程。</p>
+                        </div>
+                        <div class="section-pills">
+                            <span class="section-pill">PDF</span>
+                            <span class="section-pill">Word</span>
+                            <span class="section-pill">Excel</span>
+                        </div>
+                    </div>
                     <div class="upload-area">
                         <input 
                             type="file" 
@@ -91,10 +163,20 @@
                             style="display: none"
                         />
                         <button @click="$refs.fileInput.click()" class="upload-btn">
-                            <i class="fas fa-cloud-upload-alt"></i> 选择文件
+                            <i class="fas fa-cloud-upload-alt"></i>
+                            <span class="upload-btn-copy">
+                                <strong>选择文件</strong>
+                                <small>支持 PDF、Word、Excel</small>
+                            </span>
                         </button>
                         <div v-if="selectedFile" class="selected-file">
-                            <i class="fas fa-file"></i> {{ selectedFile.name }}
+                            <div class="selected-file-main">
+                                <i class="fas fa-file"></i>
+                                <div class="selected-file-copy">
+                                    <strong>{{ selectedFile.name }}</strong>
+                                    <span>文件已就绪，可以开始上传</span>
+                                </div>
+                            </div>
                             <button @click="uploadDocument" class="btn-primary" :disabled="isUploading">
                                 <i class="fas fa-upload"></i> {{ isUploading ? '上传中...' : '开始上传' }}
                             </button>
@@ -127,18 +209,25 @@
                 </div>
 
                 <div class="documents-section">
-                    <h3><i class="fas fa-list"></i> 已上传文档</h3>
-                    <button @click="loadDocuments" class="btn-secondary">
-                        <i class="fas fa-sync"></i> 刷新列表
-                    </button>
+                    <div class="section-heading">
+                        <div>
+                            <h3><i class="fas fa-list"></i> 已上传文档</h3>
+                            <p>查看已纳入知识库的文件，并按需刷新或删除单个文档。</p>
+                        </div>
+                        <button @click="loadDocuments" class="btn-secondary">
+                            <i class="fas fa-sync"></i> 刷新列表
+                        </button>
+                    </div>
                     
                     <div v-if="documentsLoading" class="loading-indicator">
-                        加载中...
+                        <i class="fas fa-spinner fa-spin"></i>
+                        <p>正在同步文档列表...</p>
                     </div>
                     
                     <div v-else-if="documents.length === 0" class="empty-documents">
                         <i class="fas fa-inbox"></i>
-                        <p>暂无文档</p>
+                        <strong>暂无文档</strong>
+                        <p>上传第一份文件后，这里会展示知识库中的全部文档。</p>
                     </div>
                     
                     <div v-else class="documents-list">
@@ -157,7 +246,7 @@
                                         <div class="document-details">
                                             <div class="document-name">{{ doc.filename }}</div>
                                             <div class="document-meta">
-                                                <span>{{ doc.file_type }}</span>
+                                                <span class="document-badge">{{ doc.file_type }}</span>
                                                 <span>{{ doc.chunk_count }} 个文本片段</span>
                                             </div>
                                         </div>
@@ -246,20 +335,46 @@
             <!-- Chat Area (hidden when settings is active) -->
             <div v-show="isAuthenticated && activeNav !== 'settings'" class="chat-area">
                 <header class="chat-header">
-                    <div class="header-info">
-                        <div class="status-dot"></div>
-                        <span>喵喵在线中...</span>
+                    <div class="chat-header-main">
+                        <div class="header-kicker">New chat</div>
+                        <div class="header-info">
+                            <h1>Talk to your knowledge base</h1>
+                            <div class="status-inline">
+                                <div class="status-dot"></div>
+                                <span>在线 · {{ currentUser ? currentUser.username : '访客' }}</span>
+                            </div>
+                        </div>
                     </div>
                     <div class="header-actions">
-                        <button class="icon-btn" title="更多"><i class="fas fa-ellipsis-h"></i></button>
+                        <div class="session-chip">{{ sessionId }}</div>
+                        <button class="icon-btn" title="更多" aria-label="更多操作"><i class="fas fa-ellipsis" aria-hidden="true"></i></button>
                     </div>
                 </header>
 
                 <div class="chat-container" ref="chatContainer">
                 <div v-if="messages.length === 0" class="welcome-screen">
-                    <div class="big-avatar">🐱</div>
-                    <h3>你好呀！我是喵喵</h3>
-                    <p>我可以帮你写代码、回答问题，或者只是陪你聊天~ 喵！</p>
+                    <div class="welcome-mark" aria-hidden="true">
+                        <i class="fas fa-feather-pointed"></i>
+                    </div>
+                    <div class="welcome-copy">
+                        <div class="welcome-kicker">SuperMew</div>
+                        <h3>How can I help you today?</h3>
+                        <p>Ask questions, review your uploaded documents, and keep the conversation grounded in your knowledge base.</p>
+                    </div>
+                    <div class="prompt-grid">
+                        <button class="prompt-card" @click="applyPrompt('帮我总结当前知识库里最重要的内容')" type="button">
+                            <span class="prompt-title">Summarize the knowledge base</span>
+                            <span class="prompt-desc">Extract key themes and important context</span>
+                        </button>
+                        <button class="prompt-card" @click="applyPrompt('根据已上传文档，回答一个常见问题')" type="button">
+                            <span class="prompt-title">Answer from uploaded docs</span>
+                            <span class="prompt-desc">Respond with grounded, structured output</span>
+                        </button>
+                        <button class="prompt-card" @click="applyPrompt('请根据已有内容帮我生成一份工作提纲')" type="button">
+                            <span class="prompt-title">Draft a working outline</span>
+                            <span class="prompt-desc">Turn source material into an actionable plan</span>
+                        </button>
+                    </div>
                 </div>
                 
                 <!-- Messages -->
@@ -416,7 +531,9 @@
 
             <div class="input-area-wrapper">
                 <div class="input-area">
-                    <button class="attach-btn"><i class="fas fa-paperclip"></i></button>
+                    <button class="attach-btn" aria-label="附件">
+                        <i class="fas fa-paperclip" aria-hidden="true"></i>
+                    </button>
                     <textarea 
                         v-model="userInput" 
                         @keydown="handleKeyDown"
@@ -427,14 +544,14 @@
                         rows="1"
                         ref="textarea"
                     ></textarea>
-                    <button v-if="isLoading" @click="handleStop" class="send-btn stop-btn" title="终止回答">
-                        <i class="fas fa-stop"></i>
+                    <button v-if="isLoading" @click="handleStop" class="send-btn stop-btn" title="终止回答" aria-label="终止回答">
+                        <i class="fas fa-stop" aria-hidden="true"></i>
                     </button>
-                    <button v-else @click="handleSend" class="send-btn" title="发送">
-                        <i class="fas fa-paper-plane"></i>
+                    <button v-else @click="handleSend" class="send-btn" title="发送" aria-label="发送消息">
+                        <i class="fas fa-arrow-up" aria-hidden="true"></i>
                     </button>
                 </div>
-                <div class="footer-text">AI 生成的内容可能包含错误，请仔细甄别。</div>
+                <div class="footer-text">Enter 发送，Shift + Enter 换行。AI 生成内容可能有误，请结合原始资料判断。</div>
             </div>
             </div>
             <!-- End of Chat Area -->

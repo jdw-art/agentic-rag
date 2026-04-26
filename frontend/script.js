@@ -26,6 +26,7 @@ createApp({
             deleteRemoveTimers: {},
             token: localStorage.getItem('accessToken') || '',
             currentUser: null,
+            showAccountMenu: false,
             authMode: 'login',
             authForm: {
                 username: '',
@@ -46,6 +47,13 @@ createApp({
     },
     async mounted() {
         this.configureMarked();
+        this._handleOutsideAccountMenu = (event) => {
+            const root = this.$refs.accountMenuRoot;
+            if (root && !root.contains(event.target)) {
+                this.showAccountMenu = false;
+            }
+        };
+        document.addEventListener('click', this._handleOutsideAccountMenu);
         if (this.token) {
             try {
                 await this.fetchMe();
@@ -58,6 +66,7 @@ createApp({
         this.stopUploadJobPolling();
         this.stopAllDeleteJobPolling();
         Object.values(this.deleteRemoveTimers).forEach(timer => clearTimeout(timer));
+        document.removeEventListener('click', this._handleOutsideAccountMenu);
     },
     methods: {
         configureMarked() {
@@ -157,6 +166,7 @@ createApp({
         },
 
         handleLogout() {
+            this.showAccountMenu = false;
             this.token = '';
             this.currentUser = null;
             this.messages = [];
@@ -186,6 +196,17 @@ createApp({
             if (this.abortController) {
                 this.abortController.abort();
             }
+        },
+
+        applyPrompt(text) {
+            this.userInput = text;
+            this.$nextTick(() => {
+                this.resetTextareaHeight();
+                if (this.$refs.textarea) {
+                    this.$refs.textarea.style.height = this.$refs.textarea.scrollHeight + 'px';
+                    this.$refs.textarea.focus();
+                }
+            });
         },
 
         async handleSend() {
@@ -409,6 +430,39 @@ createApp({
             this.activeNav = 'settings';
             this.showHistorySidebar = false;
             this.loadDocuments();
+        },
+
+        toggleAccountMenu() {
+            this.showAccountMenu = !this.showAccountMenu;
+        },
+
+        closeAccountMenu() {
+            this.showAccountMenu = false;
+        },
+
+        handleNewChatFromMenu() {
+            this.closeAccountMenu();
+            this.handleNewChat();
+        },
+
+        handleHistoryFromMenu() {
+            this.closeAccountMenu();
+            this.handleHistory();
+        },
+
+        handleSettingsFromMenu() {
+            this.closeAccountMenu();
+            this.handleSettings();
+        },
+
+        handleClearChatFromMenu() {
+            this.closeAccountMenu();
+            this.handleClearChat();
+        },
+
+        handleLogoutFromMenu() {
+            this.closeAccountMenu();
+            this.handleLogout();
         },
 
         mergeDocumentsWithActiveDeletes(nextDocuments) {
