@@ -22,3 +22,6 @@ tests/
 
 # doc
 docs/
+
+# evaluate
+evaluate/output/
