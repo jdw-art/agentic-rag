@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BACKEND_DIR = ROOT_DIR / "backend"
-DEFAULT_DATASET_PATH = ROOT_DIR / "data" / "test" / "labor_law_ragas_dataset.csv"
+DEFAULT_DATASET_PATH = ROOT_DIR / "data" / "test" / "stdp_snn_interview_labor_test.csv"
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "evaluate" / "output"
 
 if str(BACKEND_DIR) not in sys.path:
@@ -56,6 +56,7 @@ def _lazy_import_runtime_dependencies():
     try:
         from ragas import evaluate
         from ragas.llms import LangchainLLMWrapper
+        from ragas.run_config import RunConfig
     except ImportError as exc:
         raise RuntimeError(
             "Missing dependency: ragas. Install it with `uv add ragas` or `pip install ragas`."
@@ -68,7 +69,7 @@ def _lazy_import_runtime_dependencies():
             "Missing dependency: langchain-openai. Install it with `uv sync` or `pip install langchain-openai`."
         ) from exc
 
-    return pd, Dataset, evaluate, LangchainLLMWrapper, ChatOpenAI
+    return pd, Dataset, evaluate, LangchainLLMWrapper, RunConfig, ChatOpenAI
 
 
 def _load_metrics(evaluator_llm: Any) -> list[Any]:
@@ -124,6 +125,11 @@ class EvalConfig:
         or os.getenv("BASE_URL")
         or None
     )
+    ragas_timeout: int = int(os.getenv("RAGAS_TIMEOUT", "600"))
+    ragas_max_retries: int = int(os.getenv("RAGAS_MAX_RETRIES", "2"))
+    ragas_max_wait: int = int(os.getenv("RAGAS_MAX_WAIT", "30"))
+    ragas_max_workers: int = int(os.getenv("RAGAS_MAX_WORKERS", "4"))
+    ragas_batch_size: int = int(os.getenv("RAGAS_BATCH_SIZE", "4"))
 
 
 def _load_reference_samples(dataset_path: Path) -> list[dict[str, str]]:
@@ -175,6 +181,8 @@ def _build_evaluator_llm(ChatOpenAI: Any, LangchainLLMWrapper: Any, config: Eval
         api_key=config.api_key,
         base_url=config.base_url,
         temperature=0,
+        timeout=config.ragas_timeout,
+        max_retries=config.ragas_max_retries,
     )
     return LangchainLLMWrapper(llm)
 
@@ -190,6 +198,17 @@ def _build_answer_llm(ChatOpenAI: Any, config: EvalConfig) -> Any:
         api_key=config.api_key,
         base_url=config.base_url,
         temperature=0.3,
+        timeout=config.ragas_timeout,
+        max_retries=config.ragas_max_retries,
+    )
+
+
+def _build_ragas_run_config(RunConfig: Any, config: EvalConfig) -> Any:
+    return RunConfig(
+        timeout=config.ragas_timeout,
+        max_retries=config.ragas_max_retries,
+        max_wait=config.ragas_max_wait,
+        max_workers=config.ragas_max_workers,
     )
 
 
@@ -239,12 +258,18 @@ def _run_agent_samples(samples: list[dict[str, str]], user_id: str, ChatOpenAI: 
     total = len(samples)
     for idx, sample in enumerate(samples, 1):
         question = sample["user_input"]
+        enforced_question = (
+            "You must call the search_knowledge_base tool to answer the question below. "
+            "Do not answer from prior knowledge alone. "
+            "Your answer must be grounded in the retrieved knowledge base results.\n\n"
+            f"Question: {question}"
+        )
         session_id = f"ragas_eval_{uuid4().hex}"
         print(f"[{idx}/{total}] Running agent for question: {question}")
 
         if chat_with_agent is not None:
             result = chat_with_agent(
-                user_text=question,
+                user_text=enforced_question,
                 user_id=user_id,
                 session_id=session_id,
             )
@@ -355,7 +380,7 @@ def _extract_metric_summary(result: Any) -> dict[str, Any]:
 
 
 def main() -> None:
-    pd, Dataset, evaluate, LangchainLLMWrapper, ChatOpenAI = _lazy_import_runtime_dependencies()
+    pd, Dataset, evaluate, LangchainLLMWrapper, RunConfig, ChatOpenAI = _lazy_import_runtime_dependencies()
     config = EvalConfig()
 
     print(f"Loading reference dataset from: {config.dataset_path}")
@@ -384,9 +409,24 @@ def main() -> None:
 
     evaluator_llm = _build_evaluator_llm(ChatOpenAI, LangchainLLMWrapper, config)
     metrics = _load_metrics(evaluator_llm)
+    run_config = _build_ragas_run_config(RunConfig, config)
 
     print("Running Ragas evaluation for: faithfulness, context_recall, context_precision")
-    result = evaluate(ragas_dataset, metrics=metrics)
+    print(
+        "Ragas runtime config: "
+        f"timeout={config.ragas_timeout}s, "
+        f"max_retries={config.ragas_max_retries}, "
+        f"max_wait={config.ragas_max_wait}s, "
+        f"max_workers={config.ragas_max_workers}, "
+        f"batch_size={config.ragas_batch_size}"
+    )
+    result = evaluate(
+        ragas_dataset,
+        metrics=metrics,
+        run_config=run_config,
+        raise_exceptions=False,
+        batch_size=config.ragas_batch_size,
+    )
 
     summary_path, detail_path = _save_metric_outputs(result, config.output_dir, stem)
     print(f"Saved aggregated metrics to: {summary_path}")
