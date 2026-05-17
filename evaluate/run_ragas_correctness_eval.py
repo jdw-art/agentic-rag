@@ -1,11 +1,11 @@
-"""Run Ragas evaluation against this project's Agentic RAG pipeline.
+"""Run Ragas answer correctness evaluation against this project's RAG pipeline.
 
 This script:
-1. loads the 10-row CSV dataset from data/test/labor_law_ragas_dataset.csv
+1. loads the CSV dataset from data/test/ with columns: user_input, reference
 2. calls backend.agent.chat_with_agent() for each sample
-3. extracts retrieved contexts from rag_trace["retrieved_chunks"]
-4. evaluates faithfulness, context_recall, and context_precision with Ragas
-5. saves detailed samples and aggregated metrics under evaluate/output/
+3. falls back to the project retrieval pipeline if the agent import fails
+4. evaluates answer correctness with Ragas
+5. saves generated samples and aggregated metrics under evaluate/output/
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BACKEND_DIR = ROOT_DIR / "backend"
 DEFAULT_DATASET_PATH = ROOT_DIR / "data" / "test" / "legal_regulations_ragas_dataset_150.csv"
-DEFAULT_OUTPUT_DIR = ROOT_DIR / "evaluate" / "output"
+DEFAULT_OUTPUT_DIR = ROOT_DIR / "evaluate" / "output" / "correctness"
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.append(str(BACKEND_DIR))
@@ -73,36 +73,41 @@ def _lazy_import_runtime_dependencies():
 
 
 def _load_metrics(evaluator_llm: Any) -> list[Any]:
-    """Load metrics with compatibility across common Ragas versions."""
+    """Load answer correctness metric with compatibility across Ragas versions."""
     try:
-        from ragas.metrics import Faithfulness, LLMContextRecall, LLMContextPrecisionWithReference
+        from ragas.metrics.collections import AnswerCorrectness
 
-        return [
-            Faithfulness(llm=evaluator_llm),
-            LLMContextRecall(llm=evaluator_llm),
-            LLMContextPrecisionWithReference(llm=evaluator_llm),
-        ]
+        return [AnswerCorrectness(llm=evaluator_llm)]
     except Exception:
         pass
 
     try:
-        from ragas.metrics.collections import Faithfulness, ContextRecall, ContextPrecision
+        from ragas.metrics import AnswerCorrectness
 
-        return [
-            Faithfulness(llm=evaluator_llm),
-            ContextRecall(llm=evaluator_llm),
-            ContextPrecision(llm=evaluator_llm),
-        ]
+        return [AnswerCorrectness(llm=evaluator_llm)]
     except Exception:
         pass
 
     try:
-        from ragas.metrics import faithfulness, context_recall, context_precision
+        from ragas.metrics.collections import answer_correctness
 
-        return [faithfulness, context_recall, context_precision]
+        metric = answer_correctness
+        if hasattr(metric, "llm"):
+            metric.llm = evaluator_llm
+        return [metric]
+    except Exception:
+        pass
+
+    try:
+        from ragas.metrics import answer_correctness
+
+        metric = answer_correctness
+        if hasattr(metric, "llm"):
+            metric.llm = evaluator_llm
+        return [metric]
     except Exception as exc:
         raise RuntimeError(
-            "Unable to import Ragas metrics for faithfulness/context_recall/context_precision. "
+            "Unable to import the Ragas answer correctness metric. "
             "Please check the installed ragas version."
         ) from exc
 
@@ -111,14 +116,10 @@ def _load_metrics(evaluator_llm: Any) -> list[Any]:
 class EvalConfig:
     dataset_path: Path = DEFAULT_DATASET_PATH
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    user_id: str = "ragas_eval_user"
+    user_id: str = "ragas_correctness_user"
     answer_model: str = os.getenv("MODEL") or "gpt-4o-mini"
     model: str = os.getenv("GRADE_MODEL") or os.getenv("MODEL") or "gpt-4o-mini"
-    api_key: str = (
-        os.getenv("OPENAI_API_KEY")
-        or os.getenv("ARK_API_KEY")
-        or ""
-    )
+    api_key: str = os.getenv("OPENAI_API_KEY") or os.getenv("ARK_API_KEY") or ""
     base_url: str | None = (
         os.getenv("OPENAI_API_BASE_URL")
         or os.getenv("OPENAI_BASE_URL")
@@ -212,7 +213,9 @@ def _build_ragas_run_config(RunConfig: Any, config: EvalConfig) -> Any:
     )
 
 
-def _answer_with_project_retrieval(ChatOpenAI: Any, config: EvalConfig, question: str) -> tuple[str, dict[str, Any] | None, str]:
+def _answer_with_project_retrieval(
+    ChatOpenAI: Any, config: EvalConfig, question: str
+) -> tuple[str, dict[str, Any] | None, str]:
     from backend.tools import get_last_rag_context, reset_tool_call_guards, search_knowledge_base
 
     get_last_rag_context(clear=True)
@@ -243,7 +246,9 @@ def _answer_with_project_retrieval(ChatOpenAI: Any, config: EvalConfig, question
     return str(getattr(response, "content", response) or "").strip(), rag_trace, "retrieval_fallback"
 
 
-def _run_agent_samples(samples: list[dict[str, str]], user_id: str, ChatOpenAI: Any, config: EvalConfig) -> list[dict[str, Any]]:
+def _run_agent_samples(
+    samples: list[dict[str, str]], user_id: str, ChatOpenAI: Any, config: EvalConfig
+) -> list[dict[str, Any]]:
     chat_with_agent = None
     run_mode = "agent"
     agent_import_error = None
@@ -264,7 +269,7 @@ def _run_agent_samples(samples: list[dict[str, str]], user_id: str, ChatOpenAI: 
             "Your answer must be grounded in the retrieved knowledge base results.\n\n"
             f"Question: {question}"
         )
-        session_id = f"ragas_eval_{uuid4().hex}"
+        session_id = f"ragas_correctness_{uuid4().hex}"
         print(f"[{idx}/{total}] Running agent for question: {question}")
 
         if chat_with_agent is not None:
@@ -362,10 +367,7 @@ def _extract_metric_summary(result: Any) -> dict[str, Any]:
         summary: dict[str, Any] = {}
         for key, values in result._scores_dict.items():
             clean_values = [v for v in values if isinstance(v, (int, float))]
-            if clean_values:
-                summary[key] = sum(clean_values) / len(clean_values)
-            else:
-                summary[key] = None
+            summary[key] = sum(clean_values) / len(clean_values) if clean_values else None
         return summary
 
     if hasattr(result, "scores") and isinstance(result.scores, list) and result.scores:
@@ -389,7 +391,7 @@ def main() -> None:
 
     eval_rows = _run_agent_samples(reference_samples, config.user_id, ChatOpenAI, config)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stem = f"ragas_eval_{timestamp}"
+    stem = f"ragas_correctness_eval_{timestamp}"
 
     jsonl_path, csv_path = _save_detailed_outputs(pd, eval_rows, config.output_dir, stem)
     print(f"Saved generated evaluation samples to: {jsonl_path}")
@@ -401,7 +403,6 @@ def main() -> None:
                 "user_input": row["user_input"],
                 "reference": row["reference"],
                 "response": row["response"],
-                "retrieved_contexts": row["retrieved_contexts"],
             }
             for row in eval_rows
         ]
@@ -411,7 +412,7 @@ def main() -> None:
     metrics = _load_metrics(evaluator_llm)
     run_config = _build_ragas_run_config(RunConfig, config)
 
-    print("Running Ragas evaluation for: faithfulness, context_recall, context_precision")
+    print("Running Ragas evaluation for: answer_correctness")
     print(
         "Ragas runtime config: "
         f"timeout={config.ragas_timeout}s, "

@@ -42,7 +42,7 @@ def _extract_reference(reference_outputs: Optional[dict]) -> str:
     return ""
 
 # 1. Select your dataset
-dataset_name = "rag_test"
+dataset_name = "rag_law_test"
 
 # 2. Define an evaluator (评估最终答案，不评估检索块)
 def custom_evaluator(run_outputs: dict, reference_outputs: dict) -> bool:
@@ -70,8 +70,14 @@ def target_function(inputs: dict) -> dict:
     question = inputs["question"]
     # 每条评估样本使用独立会话，避免上下文串扰
     session_id = f"langsmith_eval_{uuid4().hex}"
+    enforced_question = (
+            "You must call the search_knowledge_base tool to answer the question below. "
+            "Do not answer from prior knowledge alone. "
+            "Your answer must be grounded in the retrieved knowledge base results.\n\n"
+            f"Question: {question}"
+        )
     result = chat_with_agent(
-        user_text=question,
+        user_text=enforced_question,
         user_id="langsmith_eval_user",
         session_id=session_id,
     )
